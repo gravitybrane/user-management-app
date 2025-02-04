@@ -1,54 +1,56 @@
 from flask import Flask, request, jsonify
+import os
+from google.cloud import firestore
 
-app = Flask(__name__)  # This initializes the Flask app
+#Set Firestore credentials
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "firestore-key.json"
 
-# In-memory datastore to managers
-users = {}
+# Initialize Firestore
+db = firestore.Client(database="users")
+users_ref = db.collection("users")
+
+# Initialize the Flask app
+app = Flask(__name__)
 
 @app.route('/users', methods=['POST'])
 def create_user():
     data = request.json
-    user_id = len(users) + 1
-    users[user_id] = {
-        "id": user_id,
-        "name": data.get("name"),
-        "email": data.get("email"),
-    }
-    return jsonify(users[user_id]), 201
+    new_user_ref = users_ref.document()  # Auto-generate Firestore ID
+    new_user_ref.set({"name": data["name"], "email": data["email"]})
+    return jsonify({"id": new_user_ref.id, "name": data["name"], "email": data["email"]}), 201
 
 @app.route('/users', methods=['GET'])
 def get_users():
-    #todo should I return a list(users) ?
-    return jsonify(list(users.values())), 200
+    users = [doc.to_dict() | {"id": doc.id} for doc in users_ref.stream()]
+    return jsonify(users), 200
 
-@app.route('/users/<int:user_id>', methods=['GET'])
+@app.route('/users/<user_id>', methods=['GET'])
 def get_user(user_id):
-    user = users.get(user_id)
-    if user:
-        return jsonify(user), 200
-    else:
-        return jsonify({"error": "User not found"}), 404
+    user_doc = users_ref.document(user_id).get()
+    if user_doc.exists:
+        return jsonify(user_doc.to_dict() | {"id": user_id}), 200
+    return jsonify({"error": "User not found"}), 404
 
-@app.route('/users/<int:user_id>', methods=['PUT'])
+@app.route('/users/<user_id>', methods=['PUT'])
 def update_user(user_id):
     data = request.json
-    user = users.get(user_id)
-    if user:
-        user.update({
-            "name": data.get("name", user["name"]),
-            "email": data.get("email", user["email"]),
-        })
-        return jsonify(user), 200
-    else:
+    user_doc = users_ref.document(user_id)
+
+    if not user_doc.get().exists:
         return jsonify({"error": "User not found"}), 404
 
-@app.route('/users/<int:user_id>', methods=['DELETE'])
+    user_doc.update(data)
+    return jsonify({"id": user_id, **data}), 200
+
+@app.route('/users/<user_id>', methods=['DELETE'])
 def delete_user(user_id):
-    if user_id in users:
-        del users[user_id]
-        return jsonify({"message": "User deleted"}), 200
-    else:
+    user_doc = users_ref.document(user_id)
+
+    if not user_doc.get().exists:
         return jsonify({"error": "User not found"}), 404
+
+    user_doc.delete()
+    return jsonify({"message": "User deleted"}), 200
 
 @app.route('/')  # This defines a route for the home page ('/')
 def home():
